@@ -5,7 +5,7 @@
 - Saved connection profiles with optional names and domains; optional local Keychain password storage; password passed via stdin.
 - In-memory colored logs: **Command-Shift-L**; resizable, scrollable, no line wrapping.
 
-![FreeRDP Launcher on macOS with saved connection profiles and display settings](/docs/images/launcher.png)
+<img src="docs/images/launcher.png" alt="FreeRDP Launcher on macOS with saved connection profiles and display settings" width="580">
 
 ## Build
 
