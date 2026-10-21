@@ -83,6 +83,43 @@ class DeveloperIDChecks(unittest.TestCase):
 
 
 class NotarizationChecks(unittest.TestCase):
+    def test_non_json_response_keeps_authentication_error_without_credentials(self):
+        key = '-----BEGIN PRIVATE KEY-----\nsecret-key-line\n-----END PRIVATE KEY-----'
+        result = subprocess.CompletedProcess([], 1, stdout='',
+            stderr='HTTP 401: Invalid credentials for KEYIDSECRET\nsecret-key-line')
+        with patch.object(signing.subprocess, 'run', return_value=result):
+            with self.assertRaises(ValueError) as failure:
+                signing.notarize(Path('test.dmg'), key, 'KEYIDSECRET', 'issuer')
+        message = str(failure.exception)
+        self.assertIn('notarytool submit failed (exit 1)', message)
+        self.assertIn('HTTP 401: Invalid credentials', message)
+        self.assertNotIn('KEYIDSECRET', message)
+        self.assertNotIn('secret-key-line', message)
+
+    def test_command_failure_reports_gatekeeper_reason_without_command_arguments(self):
+        failure = subprocess.CalledProcessError(3, ['spctl', '--assess', 'secret-argument'],
+            output=b'Assessment failed', stderr=b'rejected: invalid signature; password-secret')
+        with patch.dict(os.environ, {'APPLE_CERT_PASSWORD': 'password-secret'}):
+            message = signing.error_message(failure)
+        self.assertIn('spctl failed (exit 3)', message)
+        self.assertIn('Assessment failed', message)
+        self.assertIn('rejected: invalid signature', message)
+        self.assertNotIn('password-secret', message)
+        self.assertNotIn('secret-argument', message)
+
+    def test_log_retrieval_failure_keeps_redacted_diagnostics(self):
+        submission = '12345678-1234-1234-1234-123456789abc'
+        responses = [subprocess.CompletedProcess([], 0, stdout=json.dumps({'id': submission, 'status': 'Invalid'})),
+                     subprocess.CompletedProcess([], 1, stdout='', stderr='Network unavailable KEYIDSECRET')]
+        output = io.StringIO()
+        with patch.object(signing.subprocess, 'run', side_effect=responses), \
+             patch('sys.stderr', output):
+            with self.assertRaises(ValueError):
+                signing.notarize(Path('test.dmg'), 'private-key-secret', 'KEYIDSECRET', 'issuer')
+        self.assertIn('notarytool log failed (exit 1)', output.getvalue())
+        self.assertIn('Network unavailable', output.getvalue())
+        self.assertNotIn('KEYIDSECRET', output.getvalue())
+
     def test_rejection_fetches_redacted_log_and_removes_private_key(self):
         submission = '12345678-1234-1234-1234-123456789abc'
         key_paths = []
@@ -145,11 +182,13 @@ class NotarizationChecks(unittest.TestCase):
                 self.assertEqual(command.call_args.args, ('hdiutil', 'detach', volume))
 
     def test_stapling_exhaustion_fails_without_validation(self):
-        failed = subprocess.CompletedProcess([], 1)
+        failed = subprocess.CompletedProcess([], 65, stdout='', stderr='Ticket not found')
         with patch.object(signing.subprocess, 'run', return_value=failed) as invoke, \
              patch.object(signing.time, 'sleep'), patch.object(signing, 'run') as validate:
-            with self.assertRaises(ValueError):
+            with self.assertRaises(ValueError) as failure:
                 signing.staple(Path('test.dmg'))
+        self.assertIn('stapler staple failed (exit 65)', str(failure.exception))
+        self.assertIn('Ticket not found', str(failure.exception))
         self.assertEqual(invoke.call_count, 5)
         validate.assert_not_called()
 

@@ -19,6 +19,33 @@ MACHO = {bytes.fromhex(value) for value in (
     'feedface', 'cefaedfe', 'feedfacf', 'cffaedfe', 'cafebabe', 'bebafeca', 'cafebabf', 'bfbafeca')}
 
 
+def safe_output(value, *secrets):
+    if isinstance(value, bytes):
+        value = value.decode('utf-8', errors='replace')
+    value = value or ''
+    credentials = [*secrets, *(os.environ.get(name, '') for name in (
+        'APPLE_CERT_P12_BASE64', 'APPLE_CERT_PASSWORD', 'APPLE_API_PRIVATE_KEY', 'APPLE_API_KEY_ID'))]
+    # Also redact individual key lines if a tool echoes only part of a PEM key.
+    fragments = {part for secret in credentials if secret for part in (secret, *secret.splitlines()) if part.strip()}
+    for fragment in sorted(fragments, key=len, reverse=True):
+        value = value.replace(fragment, '[redacted]')
+    return value
+
+
+def failure_details(operation, result, *secrets):
+    details = '\n'.join(safe_output(value, *secrets).strip()
+                        for value in (result.stdout, result.stderr) if value)
+    return f'{operation} failed (exit {result.returncode})' + (f':\n{details}' if details else '')
+
+
+def error_message(error):
+    if isinstance(error, subprocess.CalledProcessError):
+        # Include the tool name, never its arguments (which may contain credentials).
+        command = error.cmd[0] if isinstance(error.cmd, (list, tuple)) else 'Command'
+        return failure_details(Path(command).name, error)
+    return safe_output(str(error)) if isinstance(error, ValueError) else type(error).__name__
+
+
 def macho_files(app):
     result = set()
     for path in app.rglob('*'):
@@ -42,9 +69,6 @@ def select_identity(keychain, team_id):
 
 
 def notarize(image, private_key, key_id, issuer):
-    def safe_output(value):
-        return value.replace(private_key, '[redacted private key]').replace(key_id, '[redacted key ID]')
-
     # The key exists only during Apple's submission/log retrieval, outside the repo.
     with tempfile.TemporaryDirectory(prefix='freerdp-notary-', dir=os.environ.get('RUNNER_TEMP')) as temp:
         key = Path(temp) / 'AuthKey.p8'
@@ -58,17 +82,19 @@ def notarize(image, private_key, key_id, issuer):
         try:
             response = json.loads(result.stdout)
         except ValueError:
-            raise ValueError('Apple notarization did not return valid JSON; no artifacts will be uploaded') from None
+            raise ValueError('Apple notarization did not return valid JSON; no artifacts will be uploaded.\n' +
+                             failure_details('notarytool submit', result, private_key, key_id)) from None
         submission = response.get('id', '')
         if (result.returncode != 0 or response.get('status') != 'Accepted'
                 or not re.fullmatch(r'[0-9a-fA-F-]{36}', submission)):
             if re.fullmatch(r'[0-9a-fA-F-]{36}', submission):
                 log = subprocess.run(['xcrun', 'notarytool', 'log', submission, *authentication],
                                      capture_output=True, text=True)
-                print(safe_output(log.stdout), flush=True)
+                print(safe_output(log.stdout, private_key, key_id), flush=True)
                 if log.returncode:
-                    print('Unable to retrieve the Apple notarization log.', file=sys.stderr)
-            raise ValueError('Apple notarization was not Accepted; publication is blocked')
+                    print(failure_details('notarytool log', log, private_key, key_id), file=sys.stderr)
+            raise ValueError('Apple notarization was not Accepted; publication is blocked.\n' +
+                             failure_details('notarytool submit', result, private_key, key_id))
         print(f'Apple notarization Accepted: {submission}', flush=True)
         return submission
 
@@ -82,7 +108,8 @@ def staple(image):
             return
         if attempt < 4:
             time.sleep(10)
-    raise ValueError('Stapling failed after Apple accepted the image; publication is blocked')
+    raise ValueError('Stapling failed after Apple accepted the image; publication is blocked.\n' +
+                     failure_details('stapler staple', result))
 
 
 def assess(path, kind):
@@ -176,7 +203,5 @@ if __name__ == '__main__':
     try:
         main()
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
-        # Do not include command arguments/stdout/stderr that may contain credentials.
-        message = str(error) if isinstance(error, ValueError) else type(error).__name__
-        print(f'Release signing failed: {message}', file=sys.stderr)
+        print(f'Release signing failed: {error_message(error)}', file=sys.stderr)
         sys.exit(1)
