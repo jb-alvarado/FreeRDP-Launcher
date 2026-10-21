@@ -1,0 +1,149 @@
+name: Release macOS app
+
+'on':
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FREERDP_REPOSITORY: https://github.com/jb-alvarado/FreeRDP.git
+  FREERDP_BRANCH: integration/sdl3-macos-fixes
+
+jobs:
+  resolve-freerdp:
+    name: Resolve FreeRDP branch once for both architectures
+    runs-on: ubuntu-24.04
+    outputs:
+      commit: ${{ steps.revision.outputs.commit }}
+    steps:
+      - name: Resolve configured branch
+        id: revision
+        shell: bash
+        run: |
+          revision="$(git ls-remote --exit-code "$FREERDP_REPOSITORY" "refs/heads/$FREERDP_BRANCH" | cut -f1)"
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          echo "commit=$revision" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.arch }}
+    needs: resolve-freerdp
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x86_64
+            runner: macos-15-intel
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Check build tools
+        run: |
+          for tool in cmake ninja pkg-config; do
+            if ! command -v "$tool" >/dev/null 2>&1; then
+              echo "::error::Missing $tool; provision the runner with: brew install cmake ninja pkgconf"
+              exit 1
+            fi
+          done
+      - name: Test build tooling
+        run: python3 -m unittest discover -s Tests -p 'test_*.py' -v
+      - name: Build and package
+        env:
+          FREERDP_COMMIT: ${{ needs.resolve-freerdp.outputs.commit }}
+          ARCH: ${{ matrix.arch }}
+          JOBS: '3'
+          RELEASE_VERSION: ${{ github.ref_name }}
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: ./build.sh --release
+      - name: Check launcher models
+        run: |
+          mkdir -p build/checks
+          xcrun swiftc -parse-as-library -target "$(uname -m)-apple-macos13.0" \
+            -module-cache-path build/checks/module-cache -framework AppKit -framework Security \
+            Sources/FreeRDPLauncher/ConnectionSettings.swift \
+            Sources/FreeRDPLauncher/Localization.swift \
+            Sources/FreeRDPLauncher/PasswordStore.swift \
+            Sources/FreeRDPLauncher/MemoryLogStore.swift \
+            Sources/FreeRDPLauncher/LauncherModel.swift \
+            Tests/Checks.swift -o build/checks/checks
+          build/checks/checks
+          xcrun swiftc -parse-as-library -target "$(uname -m)-apple-macos13.0" \
+            -module-cache-path build/checks/module-cache \
+            -framework SwiftUI -framework AppKit -framework Security \
+            Sources/FreeRDPLauncher/ConnectionSettings.swift \
+            Sources/FreeRDPLauncher/Localization.swift \
+            Sources/FreeRDPLauncher/PasswordStore.swift \
+            Sources/FreeRDPLauncher/MemoryLogStore.swift \
+            Sources/FreeRDPLauncher/LauncherModel.swift \
+            Sources/FreeRDPLauncher/LogWindow.swift \
+            Tests/LogViewChecks.swift -o build/checks/log-view-checks
+          build/checks/log-view-checks
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: release-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish binary and corresponding sources together
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: release-*
+          path: artifacts
+          merge-multiple: true
+      - name: Verify complete release assets
+        run: |
+          cd artifacts
+          for arch in arm64 x86_64; do
+            test "$(find . -maxdepth 1 -name "*-$arch.dmg" | wc -l)" -eq 1
+            test "$(find . -maxdepth 1 -name "*-$arch-sources.tar.gz" | wc -l)" -eq 1
+            test "$(find . -maxdepth 1 -name "*-$arch-SHA256SUMS.txt" | wc -l)" -eq 1
+          done
+          sha256sum --check *-SHA256SUMS.txt
+      - name: Prepare release notes
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          url = f'https://github.com/{os.environ["GITHUB_REPOSITORY"]}/releases/tag/{os.environ["TAG"]}'
+          Path('notes.md').write_text(
+              'Native macOS FreeRDP launcher. Choose the arm64 (Apple Silicon) or x86_64 (Intel) disk image (.dmg).\n\n'
+              'Open the disk image and drag FreeRDP into Applications.\n\n'
+              'Requires macOS 13 or later. Locally signed (ad hoc); not notarized.\n\n'
+              'This software uses libraries from [FFmpeg](https://ffmpeg.org/) under '
+              '[LGPLv2.1 or later](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html). '
+              f'The matching **sources.tar.gz** assets on [this release]({url}) contain the exact '
+              'corresponding sources, build instructions and configuration. '
+              'Keep source and binary assets together when redistributing.\n\n'
+              'FreeRDP Launcher: Apache-2.0. Third-party license texts, font notices and '
+              'dependency provenance are included in the app and source archives.\n')
+          PY
+      - name: Upload complete release as draft, then publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          extra=()
+          if [[ "$TAG" == *-* ]]; then extra+=(--prerelease); fi
+          gh release create "$TAG" artifacts/* \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" \
+            --draft --notes-file notes.md "${extra[@]}"
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false "${extra[@]}"

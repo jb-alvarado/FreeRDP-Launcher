@@ -1,0 +1,14 @@
+/build/
+/dist/
+/.env
+/.env.*
+!/.env.example
+/.venv/
+/.swiftpm/
+/DerivedData/
+__pycache__/
+*.py[cod]
+.DS_Store
+*.p12
+*.p8
+*.mobileprovision

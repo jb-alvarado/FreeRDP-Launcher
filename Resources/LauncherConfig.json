@@ -1,0 +1,7 @@
+{
+  "settingsKey": "connection.v2",
+  "legacySettingsKey": "connection.v1",
+  "logMaxBytes": 2097152,
+  "logMaxEntries": 10000,
+  "logMaxLineBytes": 65536
+}

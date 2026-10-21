@@ -1,0 +1,8 @@
+FreeRDP Launcher
+
+Launcher source code and build tooling are licensed under the Apache License 2.0.
+The bundled FreeRDP/WinPR client and FreeRDP icon originate from the FreeRDP project
+(https://www.freerdp.com/) and retain their Apache-2.0 license and upstream notices.
+
+Other bundled libraries and fonts retain their respective licenses. See
+THIRD_PARTY_NOTICES.md, the included Licenses directory and build-manifest.json.
