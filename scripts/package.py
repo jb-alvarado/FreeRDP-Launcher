@@ -92,6 +92,18 @@ def copy_notices(source, destination):
     return files
 
 
+def sign_app(app, binaries):
+    with (app / 'Contents/Info.plist').open('rb') as handle:
+        executable = plistlib.load(handle)['CFBundleExecutable']
+    main = app / 'Contents/MacOS' / executable
+    # Signing the main executable can seal/validate its entire bundle. Sign all
+    # nested code first, then sign the bundle (and its main executable) once.
+    for binary in sorted(set(binaries) - {main}):
+        run('codesign', '--force', '--sign', '-', '--timestamp=none', binary)
+    run('codesign', '--force', '--sign', '-', '--timestamp=none', app)
+    run('codesign', '--verify', '--deep', '--strict', app)
+
+
 def package(project, config, build, prefix, inputs, freerdp, freerdp_archive, manifest, release):
     install = build
     install.mkdir(exist_ok=True)
@@ -153,10 +165,7 @@ def package(project, config, build, prefix, inputs, freerdp, freerdp_archive, ma
         with (contents / 'Info.plist').open('wb') as handle:
             plistlib.dump(info, handle)
         (contents / 'PkgInfo').write_bytes(b'APPL????')
-        for binary in sorted(binaries):
-            run('codesign', '--force', '--sign', '-', '--timestamp=none', binary)
-        run('codesign', '--force', '--sign', '-', '--timestamp=none', app)
-        run('codesign', '--verify', '--deep', '--strict', app)
+        sign_app(app, binaries)
         run('plutil', '-lint', contents / 'Info.plist')
         # CLI-only smoke check: no window, server connection, credentials or user preferences.
         environment = os.environ.copy()
