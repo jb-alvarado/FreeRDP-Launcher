@@ -92,19 +92,66 @@ def copy_notices(source, destination):
     return files
 
 
-def sign_app(app, binaries):
+def developer_id_requirement(team_id):
+    if not re.fullmatch(r'[A-Z0-9]{10}', team_id or ''):
+        raise ValueError('A valid Apple Team ID is required')
+    return ('anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists '
+            'and certificate leaf[field.1.2.840.113635.100.6.1.13] exists '
+            f'and certificate leaf[subject.OU] = "{team_id}"')
+
+
+def verify_developer_id(path, team_id, runtime=True):
+    run('codesign', '--verify', '--strict', '-R', developer_id_requirement(team_id), path)
+    details = subprocess.run(['codesign', '--display', '--verbose=4', str(path)],
+                             check=True, capture_output=True, text=True).stderr
+    if f'TeamIdentifier={team_id}' not in details or 'Timestamp=' not in details:
+        raise ValueError(f'Missing Developer ID team or secure timestamp: {path.name}')
+    flags = re.search(r'flags=0x([0-9a-fA-F]+)', details)
+    if runtime and (not flags or not int(flags[1], 16) & 0x10000):
+        raise ValueError(f'Hardened Runtime is missing: {path.name}')
+
+
+def sign_app(app, binaries, identity=None, team_id=None, keychain=None):
     with (app / 'Contents/Info.plist').open('rb') as handle:
         executable = plistlib.load(handle)['CFBundleExecutable']
     main = app / 'Contents/MacOS' / executable
-    # Signing the main executable can seal/validate its entire bundle. Sign all
-    # nested code first, then sign the bundle (and its main executable) once.
-    for binary in sorted(set(binaries) - {main}):
-        run('codesign', '--force', '--sign', '-', '--timestamp=none', binary)
-    run('codesign', '--force', '--sign', '-', '--timestamp=none', app)
+    if identity is not None:
+        developer_id_requirement(team_id)
+        if not re.fullmatch(r'[0-9a-fA-F]{40}', identity):
+            raise ValueError('Developer ID signing requires an exact certificate SHA-1')
+        options = ['--sign', identity, '--options', 'runtime', '--timestamp']
+        if keychain:
+            options += ['--keychain', str(keychain)]
+    else:
+        options = ['--sign', '-', '--timestamp=none']
+    # Sign nested code first. Signing the app also signs its main executable.
+    for binary in [*sorted(set(binaries) - {main}), app]:
+        entitlements = {}
+        if identity is not None:
+            original = main if binary == app else binary
+            existing = subprocess.run(['codesign', '--display', '--entitlements', ':-', str(original)],
+                                      capture_output=True)
+            if existing.returncode == 0 and existing.stdout.strip():
+                entitlements.update(plistlib.loads(existing.stdout))
+            if original.name == 'sdl-freerdp':
+                entitlement_file = app / 'Contents/Resources/FreeRDPClient.entitlements'
+                with entitlement_file.open('rb') as handle:
+                    entitlements.update(plistlib.load(handle))
+        with tempfile.TemporaryDirectory(prefix='freerdp-entitlements-') as temp:
+            extra = []
+            if entitlements:
+                path = Path(temp) / 'entitlements.plist'
+                path.write_bytes(plistlib.dumps(entitlements))
+                extra = ['--entitlements', str(path)]
+            run('codesign', '--force', *options, *extra, binary)
     run('codesign', '--verify', '--deep', '--strict', app)
+    if identity is not None:
+        for binary in sorted(set(binaries)):
+            verify_developer_id(binary, team_id)
+        verify_developer_id(app, team_id)
 
 
-def package(project, config, build, prefix, inputs, freerdp, freerdp_archive, manifest, release):
+def package(project, config, build, prefix, inputs, freerdp, freerdp_archive, manifest, release, prepare_release=False):
     install = build
     install.mkdir(exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix='.package-', dir=install))
@@ -165,14 +212,16 @@ def package(project, config, build, prefix, inputs, freerdp, freerdp_archive, ma
         with (contents / 'Info.plist').open('wb') as handle:
             plistlib.dump(info, handle)
         (contents / 'PkgInfo').write_bytes(b'APPL????')
-        sign_app(app, binaries)
+        if not prepare_release:
+            sign_app(app, binaries)
         run('plutil', '-lint', contents / 'Info.plist')
         # CLI-only smoke check: no window, server connection, credentials or user preferences.
         environment = os.environ.copy()
         for key in list(environment):
             if key.startswith('DYLD_'):
                 del environment[key]
-        subprocess.run([str(client), '/version'], env=environment, check=True, timeout=30)
+        if not prepare_release:
+            subprocess.run([str(client), '/version'], env=environment, check=True, timeout=30)
         destination = install / app.name
         if destination.exists():
             shutil.rmtree(destination)
@@ -196,7 +245,7 @@ def package(project, config, build, prefix, inputs, freerdp, freerdp_archive, ma
                 pass  # Preserve any unrelated files in the old output directory.
         print(f'App created: {destination}\nMinimum macOS: {minimum}', flush=True)
         if release:
-            create_release(project, config, build, destination, inputs, freerdp_archive, manifest, version)
+            create_release(project, config, build, destination, inputs, freerdp_archive, manifest, version, prepare_release=prepare_release)
     finally:
         shutil.rmtree(stage)
 
@@ -218,7 +267,7 @@ def create_dmg(app, destination, volume_name):
         shutil.rmtree(stage)
 
 
-def create_release(project, config, build, app, inputs, freerdp_archive, manifest, version):
+def create_release(project, config, build, app, inputs, freerdp_archive, manifest, version, prepare_release=False):
     dist = project / 'dist'
     dist.mkdir(exist_ok=True)
     name = f'{config["appName"]}-{version}-macos-{manifest["architecture"]}'
@@ -246,6 +295,18 @@ def create_release(project, config, build, app, inputs, freerdp_archive, manifes
         with tarfile.open(source_tar, 'w:gz') as target:
             target.add(sources, arcname=name + '-sources')
         disk_image = dist / (name + '.dmg')
+        if prepare_release:
+            # No distributable image/checksum exists until Apple accepts the image.
+            disk_image.unlink(missing_ok=True)
+            checksum = dist / (name + '-SHA256SUMS.txt')
+            checksum.unlink(missing_ok=True)
+            plan = dict(app=str(app.relative_to(project)), dmg=str(disk_image.relative_to(project)),
+                        sources=str(source_tar.relative_to(project)), checksum=str(checksum.relative_to(project)),
+                        sourceSHA256=digest(source_tar), architecture=manifest['architecture'],
+                        volumeName=config['appName'] + ' ' + version)
+            (build / 'release-plan.json').write_text(json.dumps(plan, indent=2) + '\n')
+            print('App and source archive prepared; Developer ID signing and notarization required.', flush=True)
+            return
         create_dmg(app, disk_image, config['appName'] + ' ' + version)
         artifacts = [disk_image, source_tar]
         checksum = dist / (name + '-SHA256SUMS.txt')

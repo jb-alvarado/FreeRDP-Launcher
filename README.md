@@ -25,7 +25,7 @@
 - Output: `build/FreeRDP.app`; CLI wrapper: `build/bin/sdl-freerdp`.
 - Copy the app to `~/Applications` or `/Applications` for Spotlight; no source checkout or Homebrew runtime libraries are required.
 - Native code uses Release optimization and LTO where supported; verbose WinPR runtime assertions are disabled.
-- The app is signed locally (ad hoc), without notarization.
+- Local builds use ad-hoc signing. Official GitHub releases require Apple Developer ID signing, notarization and stapling.
 
 ## Dependencies
 
@@ -40,7 +40,7 @@
 
 - Commit changes and push a semantic version tag, e.g. `v0.1.0`.
 - `.github/workflows/release.yml` uses `https://github.com/jb-alvarado/FreeRDP.git`, branch `integration/sdl3-macos-fixes`; it resolves the branch once so Apple Silicon and Intel build the same commit, then publishes both variants together.
-- Local packaging: `RELEASE_VERSION=v0.1.0 ./build.sh --release` from a clean checkout.
+- Local packaging (ad-hoc, not notarized): `RELEASE_VERSION=v0.1.0 ./build.sh --release` from a clean checkout.
 - Assets: compressed app DMG (with an Applications shortcut), matching complete source archive and SHA-256 checksums for each architecture.
 - Source archives include exact dependency sources, the FreeRDP revision, launcher sources, licenses and build configuration.
 - Keep source assets available alongside binaries; see [third-party notices](THIRD_PARTY_NOTICES.md).

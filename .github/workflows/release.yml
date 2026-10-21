@@ -33,6 +33,8 @@ jobs:
   build:
     name: Build ${{ matrix.arch }}
     needs: resolve-freerdp
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'jb-alvarado/FreeRDP-Launcher'
+    environment: release-signing
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     strategy:
@@ -47,6 +49,11 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+          fetch-depth: 0
+      - name: Require release tag to reference trusted main history
+        env:
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: git merge-base --is-ancestor "$RELEASE_COMMIT" origin/main
       - name: Check build tools
         run: |
           for tool in cmake ninja pkg-config; do
@@ -57,14 +64,14 @@ jobs:
           done
       - name: Test build tooling
         run: python3 -m unittest discover -s Tests -p 'test_*.py' -v
-      - name: Build and package
+      - name: Build app and prepare matching sources without signing secrets
         env:
           FREERDP_COMMIT: ${{ needs.resolve-freerdp.outputs.commit }}
           ARCH: ${{ matrix.arch }}
           JOBS: '3'
           RELEASE_VERSION: ${{ github.ref_name }}
           BUILD_NUMBER: ${{ github.run_number }}
-        run: ./build.sh --release
+        run: ./build.sh --prepare-release
       - name: Check launcher models
         run: |
           mkdir -p build/checks
@@ -88,6 +95,57 @@ jobs:
             Sources/FreeRDPLauncher/LogWindow.swift \
             Tests/LogViewChecks.swift -o build/checks/log-view-checks
           build/checks/log-view-checks
+      - name: Validate Apple configuration and prepare temporary certificate
+        env:
+          APPLE_CERT_P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_ISSUER_ID: ${{ vars.APPLE_ISSUER_ID }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: |
+          python3 - <<'PYCODE'
+          import base64
+          import os
+          from pathlib import Path
+          names = ('APPLE_CERT_P12_BASE64', 'APPLE_CERT_PASSWORD', 'APPLE_API_PRIVATE_KEY',
+                   'APPLE_API_KEY_ID', 'APPLE_ISSUER_ID', 'APPLE_TEAM_ID')
+          if any(not os.environ.get(name) for name in names):
+              raise SystemExit('Missing Apple signing configuration; release cannot proceed')
+          if os.environ['APPLE_TEAM_ID'] != '758MCFP8H8':
+              raise SystemExit('APPLE_TEAM_ID must be 758MCFP8H8')
+          directory = Path(os.environ['RUNNER_TEMP']) / 'freerdp-apple-signing'
+          directory.mkdir(mode=0o700)
+          try:
+              certificate = base64.b64decode(''.join(os.environ['APPLE_CERT_P12_BASE64'].split()), validate=True)
+          except ValueError:
+              raise SystemExit('APPLE_CERT_P12_BASE64 must contain a base64 encoded P12') from None
+          descriptor = os.open(directory / 'certificate.p12', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          with os.fdopen(descriptor, 'wb') as handle:
+              handle.write(certificate)
+          PYCODE
+      - name: Import Developer ID certificate into temporary keychain
+        uses: Apple-Actions/import-codesign-certs@77ba2a2a8f5cfc8c405ebf3159f767c323e238f9 # v7
+        with:
+          keychain: signing_temp
+          p12-filepath: ${{ runner.temp }}/freerdp-apple-signing/certificate.p12
+          p12-password: ${{ secrets.APPLE_CERT_PASSWORD }}
+      - name: Sign app and DMG, notarize, staple and generate final checksums
+        env:
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_ISSUER_ID: ${{ vars.APPLE_ISSUER_ID }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: |
+          python3 scripts/release_signing.py --keychain "$HOME/Library/Keychains/signing_temp.keychain-db"
+          cd dist
+          shasum -a 256 --check *-SHA256SUMS.txt
+      - name: Remove temporary certificate and private key material
+        if: always()
+        run: |
+          rm -rf "$RUNNER_TEMP/freerdp-apple-signing"
+          # The certificate-import action deletes its temporary keychain in its post step.
+          find "$RUNNER_TEMP" -maxdepth 1 -type d -name 'freerdp-notary-*' -exec rm -rf {} +
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: release-${{ matrix.arch }}
@@ -127,7 +185,7 @@ jobs:
           Path('notes.md').write_text(
               'Native macOS FreeRDP launcher. Choose the arm64 (Apple Silicon) or x86_64 (Intel) disk image (.dmg).\n\n'
               'Open the disk image and drag FreeRDP into Applications.\n\n'
-              'Requires macOS 13 or later. Locally signed (ad hoc); not notarized.\n\n'
+              'Requires macOS 13 or later. Signed with Apple Developer ID and notarized by Apple.\n\n'
               'This software uses libraries from [FFmpeg](https://ffmpeg.org/) under '
               '[LGPLv2.1 or later](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html). '
               f'The matching **sources.tar.gz** assets on [this release]({url}) contain the exact '

@@ -8,8 +8,11 @@
   `FreeRDP.app/Contents/Frameworks`; retain their filenames and ABI-compatible install names.
 - Set each replacement library's install ID to `@rpath/<filename>` with `install_name_tool`.
 - Set its non-system dependency paths to `@rpath/<filename>` and add `@loader_path` as an rpath.
-- Re-sign each replaced library locally: `codesign --force --sign - --timestamp=none <library>`.
-- Re-sign the app: `codesign --force --sign - --timestamp=none FreeRDP.app`.
+- Re-sign all bundled dylibs locally with ad-hoc signing and runtime flags cleared:
+  `codesign --force --sign - --options 0 --timestamp=none <library>`.
+- Re-sign the helper before the outer app:
+  `codesign --force --sign - --options 0 --timestamp=none FreeRDP.app/Contents/MacOS/sdl-freerdp`.
+- Re-sign the app (including its main executable):
+  `codesign --force --sign - --options 0 --timestamp=none FreeRDP.app`.
 - Verify: `codesign --verify --deep --strict FreeRDP.app`.
-- The app uses ad-hoc signing, without hardened runtime or library-validation restrictions.
 - Modification and reverse engineering for debugging changes to LGPL components are permitted.

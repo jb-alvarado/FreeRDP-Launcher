@@ -19,8 +19,11 @@ PROJECT = Path(__file__).resolve().parent.parent
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--release', action='store_true', help='also create binary and corresponding-source release archives')
+    parser.add_argument('--prepare-release', action='store_true', help='prepare app and sources for mandatory Developer ID signing and notarization')
     parser.add_argument('--rebuild-native', action='store_true', help='rebuild dependencies and refresh the FreeRDP source')
     args = parser.parse_args()
+    if args.prepare_release:
+        args.release = True
     load_environment(PROJECT / '.env')
     config = json.loads((PROJECT / 'build-config.json').read_text())
     arch = os.environ.get('ARCH', platform.machine())
@@ -43,6 +46,9 @@ def main():
     cache, sources = build / 'cache', build / 'sources'
     for directory in (cache, sources):
         directory.mkdir(parents=True, exist_ok=True)
+    if args.prepare_release:
+        (build / 'release-plan.json').unlink(missing_ok=True)
+        (build / 'release-validation.json').unlink(missing_ok=True)
     selected = {key: value for key, value in config['dependencies'].items() if key != 'ffmpeg' or ffmpeg == 'ON'}
     key = native_key(PROJECT, selected, config['freerdp'], arch, deployment, ffmpeg)
     cached = None if args.rebuild_native else load_native_cache(build, key)
@@ -68,7 +74,7 @@ def main():
     # Keep the actual source inputs and commands available for packaging/rebuilding.
     (build / 'build-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     from package import package
-    package(PROJECT, config, build, prefix, inputs, freerdp, freerdp_archive, manifest, args.release)
+    package(PROJECT, config, build, prefix, inputs, freerdp, freerdp_archive, manifest, args.release, prepare_release=args.prepare_release)
 
 
 def build_native(config, build, cache, sources, selected, arch, deployment, ffmpeg, jobs, key):
