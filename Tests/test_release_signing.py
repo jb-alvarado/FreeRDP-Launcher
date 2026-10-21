@@ -100,6 +100,23 @@ class DeveloperIDChecks(unittest.TestCase):
 
 
 class NotarizationChecks(unittest.TestCase):
+    def test_timeout_json_on_either_stream_reports_submission_without_fetching_log(self):
+        submission = 'f2746f23-ef9d-4dd7-8027-2afdd4713df2'
+        payload = json.dumps({'id': submission, 'message': 'Timeout of 5400 second(s) was reached before processing completed.'})
+        for stdout, stderr in ((payload, ''), ('', payload), ('', 'Timeout')):
+            with self.subTest(stdout=stdout, stderr=stderr), \
+                 patch.object(signing.subprocess, 'run', return_value=
+                    subprocess.CompletedProcess([], 124, stdout=stdout, stderr=stderr)) as invoke:
+                with self.assertRaises(ValueError) as failure:
+                    signing.notarize(Path('test.dmg'), 'private-key-secret', 'KEYIDSECRET', 'issuer')
+                message = str(failure.exception)
+                self.assertIn('wait timed out', message)
+                self.assertIn('not cancelled', message)
+                self.assertNotIn('not return valid JSON', message)
+                if payload in (stdout, stderr):
+                    self.assertIn(submission, message)
+                self.assertEqual(invoke.call_count, 1)
+
     def test_non_json_response_keeps_authentication_error_without_credentials(self):
         key = '-----BEGIN PRIVATE KEY-----\nsecret-key-line\n-----END PRIVATE KEY-----'
         result = subprocess.CompletedProcess([], 1, stdout='',
@@ -147,6 +164,7 @@ class NotarizationChecks(unittest.TestCase):
             self.assertEqual(key.stat().st_mode & 0o777, 0o600)
             if 'submit' in command:
                 self.assertIn('--wait', command)
+                self.assertEqual(command[command.index('--timeout') + 1], '90m')
                 return subprocess.CompletedProcess(command, 0, stdout=json.dumps({'id': submission, 'status': 'Invalid'}))
             return subprocess.CompletedProcess(command, 0, stdout='Rejected private-key-secret KEYIDSECRET')
         output = io.StringIO()

@@ -76,15 +76,30 @@ def notarize(image, private_key, key_id, issuer):
         with os.fdopen(descriptor, 'w') as handle:
             handle.write(private_key)
         authentication = ['--key', str(key), '--key-id', key_id, '--issuer', issuer]
+        print(f'Uploading {image.name} to Apple and waiting up to 90 minutes for notarization.', flush=True)
         result = subprocess.run(['xcrun', 'notarytool', 'submit', str(image), *authentication,
-                                 '--wait', '--timeout', '30m', '--output-format', 'json'],
+                                 '--wait', '--timeout', '90m', '--output-format', 'json'],
                                 capture_output=True, text=True)
-        try:
-            response = json.loads(result.stdout)
-        except ValueError:
+        response = None
+        # notarytool writes some errors, including timeout JSON, to stderr.
+        for output in (result.stdout, result.stderr):
+            try:
+                parsed = json.loads(output or '')
+            except ValueError:
+                continue
+            if isinstance(parsed, dict):
+                response = parsed
+                break
+        submission = response.get('id', '') if response else ''
+        if result.returncode == 124:
+            identifier = submission if isinstance(submission, str) and re.fullmatch(r'[0-9a-fA-F-]{36}', submission) else 'unknown'
+            raise ValueError(f'Apple notarization wait timed out. Submission ID: {identifier}. '
+                             'The submission was not cancelled; check its status with notarytool info/history. '
+                             'No artifacts will be published.\n' +
+                             failure_details('notarytool submit', result, private_key, key_id))
+        if response is None:
             raise ValueError('Apple notarization did not return valid JSON; no artifacts will be uploaded.\n' +
                              failure_details('notarytool submit', result, private_key, key_id)) from None
-        submission = response.get('id', '')
         if (result.returncode != 0 or response.get('status') != 'Accepted'
                 or not re.fullmatch(r'[0-9a-fA-F-]{36}', submission)):
             if re.fullmatch(r'[0-9a-fA-F-]{36}', submission):
