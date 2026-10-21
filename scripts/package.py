@@ -101,7 +101,8 @@ def developer_id_requirement(team_id):
 
 
 def verify_developer_id(path, team_id, runtime=True):
-    run('codesign', '--verify', '--strict', '-R', developer_id_requirement(team_id), path)
+    # codesign treats requirements as file paths unless prefixed with '='.
+    run('codesign', '--verify', '--strict', '-R', '=' + developer_id_requirement(team_id), path)
     details = subprocess.run(['codesign', '--display', '--verbose=4', str(path)],
                              check=True, capture_output=True, text=True).stderr
     if f'TeamIdentifier={team_id}' not in details or 'Timestamp=' not in details:

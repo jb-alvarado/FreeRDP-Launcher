@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -43,10 +44,26 @@ class DeveloperIDChecks(unittest.TestCase):
                  patch.object(package.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, stderr=text)):
                 if accepted:
                     package.verify_developer_id(Path('app'), signing.TEAM_ID)
+                    self.assertEqual(verify.call_args.args[-2], '=' + package.developer_id_requirement(signing.TEAM_ID))
                     self.assertIn('certificate leaf[field.1.2.840.113635.100.6.1.13]', verify.call_args.args[-2])
                 else:
                     with self.assertRaises(ValueError):
                         package.verify_developer_id(Path('app'), signing.TEAM_ID)
+
+    @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('codesign') and shutil.which('xcrun'),
+                         'requires macOS signing tools')
+    def test_real_codesign_parses_inline_developer_id_requirement(self):
+        # Ad-hoc code is valid, but is not signed by our Developer ID team.
+        # Exit 3 means the requirement parsed and evaluated to false; a missing
+        # '=' instead fails with exit 1 and "invalid requirement specification".
+        with tempfile.TemporaryDirectory() as temp:
+            source, binary = Path(temp) / 'main.c', Path(temp) / 'test-client'
+            source.write_text('int main(void) { return 0; }\n')
+            subprocess.run(['xcrun', 'clang', str(source), '-o', str(binary)], check=True, capture_output=True)
+            subprocess.run(['codesign', '--force', '--sign', '-', str(binary)], check=True, capture_output=True)
+            with self.assertRaises(subprocess.CalledProcessError) as failure:
+                package.verify_developer_id(binary, signing.TEAM_ID)
+            self.assertEqual(failure.exception.returncode, 3)
 
     def test_developer_signing_preserves_entitlements_and_signs_inside_out(self):
         with tempfile.TemporaryDirectory() as temp:
