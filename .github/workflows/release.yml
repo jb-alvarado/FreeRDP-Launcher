@@ -12,8 +12,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  FREERDP_REPOSITORY: https://github.com/jb-alvarado/FreeRDP.git
-  FREERDP_BRANCH: integration/sdl3-macos-fixes
+  FREERDP_REPOSITORY: https://github.com/FreeRDP/FreeRDP.git
+  FREERDP_BRANCH: master
 
 jobs:
   resolve-freerdp:

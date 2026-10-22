@@ -39,7 +39,7 @@
 ## Releases
 
 - Commit changes and push a semantic version tag, e.g. `v0.1.0`.
-- `.github/workflows/release.yml` uses `https://github.com/jb-alvarado/FreeRDP.git`, branch `integration/sdl3-macos-fixes`; it resolves the branch once so Apple Silicon and Intel build the same commit, then publishes both variants together.
+- `.github/workflows/release.yml` uses `https://github.com/FreeRDP/FreeRDP.git`, branch `master`; it resolves the branch once so Apple Silicon and Intel build the same commit, then publishes both variants together.
 - Local packaging (ad-hoc, not notarized): `RELEASE_VERSION=v0.1.0 ./build.sh --release` from a clean checkout.
 - Assets: compressed app DMG (with an Applications shortcut), matching complete source archive and SHA-256 checksums for each architecture.
 - Source archives include exact dependency sources, the FreeRDP revision, launcher sources, licenses and build configuration.
