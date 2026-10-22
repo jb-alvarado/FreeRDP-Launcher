@@ -173,7 +173,7 @@ def build_native(config, build, cache, sources, selected, arch, deployment, ffmp
                '-DZLIB_ROOT=' + str(prefix), '-DWITH_CLIENT_MAC=OFF', '-DWITH_CLIENT_SDL=ON',
                '-DWITH_CLIENT_SDL2=OFF', '-DWITH_CLIENT_SDL3=ON', '-DWITH_CLIENT_SDL_VERSIONED=OFF',
                '-DWITH_SDL_LINK_SHARED=ON', '-DWITH_SDL_IMAGE_DIALOGS=OFF', '-DSDL_USE_COMPILED_RESOURCES=ON',
-               '-DWITH_VERBOSE_WINPR_ASSERT=OFF',
+               '-DWITH_VERBOSE_WINPR_ASSERT=ON',
                '-DBUILD_TESTING=OFF', '-DWITH_X11=OFF', '-DWITH_SERVER=OFF', '-DWITH_SAMPLE=OFF',
                '-DWITH_CAIRO=OFF', '-DWITH_KRB5=OFF', '-DWITH_JSON_DISABLED=ON', '-DWITH_WINPR_JSON=OFF',
                '-DWITH_AAD=OFF', '-DCHANNEL_URBDRC=OFF', '-DWITH_MANPAGES=OFF', '-DWITH_WINPR_TOOLS=OFF',
