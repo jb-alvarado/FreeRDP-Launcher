@@ -114,24 +114,47 @@ def notarize(image, private_key, key_id, issuer):
         return submission
 
 
-def staple(image):
-    # Accepted tickets can take a short time to propagate to Apple's CDN.
+def transient_network_failure(result):
+    details = '\n'.join(value or '' for value in (result.stdout, result.stderr)).lower()
+    # An exit code alone (including stapler's 68) does not identify a network failure.
+    if any(reason in details for reason in (
+            'invalid signature', 'invalid ticket', 'ticket not found', 'ticket has been revoked',
+            'source=unnotarized developer id', 'source=no usable signature')):
+        return False
+    return bool(re.search(r'nsurlerrordomain\s+code=-(?:1001|1003|1004|1005|1006|1009|1018)\b', details)
+                or any(reason in details for reason in (
+                    'the network connection was lost', 'network connection timed out',
+                    'the request timed out', 'could not connect to the server',
+                    'could not resolve host', 'a server with the specified hostname could not be found',
+                    'the internet connection appears to be offline', 'connection reset by peer',
+                    'service unavailable', 'http 503', 'http 502', 'http 504')))
+
+
+def run_network_check(operation, command):
     for attempt in range(5):
-        result = subprocess.run(['xcrun', 'stapler', 'staple', str(image)], capture_output=True, text=True)
+        print(f'{operation}: attempt {attempt + 1}/5', flush=True)
+        result = subprocess.run(command, capture_output=True, text=True)
         if result.returncode == 0:
-            run('xcrun', 'stapler', 'validate', image)
-            return
-        if attempt < 4:
-            time.sleep(10)
-    raise ValueError('Stapling failed after Apple accepted the image; publication is blocked.\n' +
-                     failure_details('stapler staple', result))
+            print(f'{operation}: succeeded', flush=True)
+            return result
+        if not transient_network_failure(result) or attempt == 4:
+            raise ValueError(failure_details(operation, result) + '\nPublication is blocked.')
+        delay = 10 * (attempt + 1)
+        print(f'{failure_details(operation, result)}\nTemporary network failure; retrying in {delay}s.',
+              flush=True)
+        time.sleep(delay)
+
+
+def staple(image):
+    run_network_check('stapler staple', ['xcrun', 'stapler', 'staple', str(image)])
+    run_network_check('stapler validate', ['xcrun', 'stapler', 'validate', str(image)])
 
 
 def assess(path, kind):
     command = ['spctl', '--assess', '--type', kind, '--verbose=2']
     if kind == 'open':
         command += ['--context', 'context:primary-signature']
-    result = subprocess.run([*command, str(path)], check=True, capture_output=True, text=True)
+    result = run_network_check(f'Gatekeeper {kind}', [*command, str(path)])
     if 'source=Notarized Developer ID' not in result.stdout + result.stderr:
         raise ValueError(f'Gatekeeper did not recognize notarized Developer ID code: {path.name}')
 

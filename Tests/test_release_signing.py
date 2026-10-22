@@ -217,15 +217,71 @@ class NotarizationChecks(unittest.TestCase):
                 self.assertEqual(command.call_args.args, ('hdiutil', 'detach', volume))
 
     def test_stapling_exhaustion_fails_without_validation(self):
-        failed = subprocess.CompletedProcess([], 65, stdout='', stderr='Ticket not found')
+        failed = subprocess.CompletedProcess([], 68, stdout='', stderr='NSURLErrorDomain Code=-1005 "The network connection was lost."')
         with patch.object(signing.subprocess, 'run', return_value=failed) as invoke, \
-             patch.object(signing.time, 'sleep'), patch.object(signing, 'run') as validate:
+             patch.object(signing.time, 'sleep') as sleep:
             with self.assertRaises(ValueError) as failure:
                 signing.staple(Path('test.dmg'))
-        self.assertIn('stapler staple failed (exit 65)', str(failure.exception))
-        self.assertIn('Ticket not found', str(failure.exception))
+        self.assertIn('stapler staple failed (exit 68)', str(failure.exception))
+        self.assertIn('network connection was lost', str(failure.exception))
         self.assertEqual(invoke.call_count, 5)
-        validate.assert_not_called()
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [10, 20, 30, 40])
+        self.assertTrue(all(call.args[0][2] == 'staple' for call in invoke.call_args_list))
+
+    def test_staple_and_validate_retry_independently(self):
+        ok = subprocess.CompletedProcess([], 0, stdout='', stderr='')
+        offline = subprocess.CompletedProcess([], 68, stdout='', stderr='NSURLErrorDomain Code=-1005')
+        with patch.object(signing.subprocess, 'run', side_effect=[offline, ok, offline, ok]) as invoke, \
+             patch.object(signing.time, 'sleep') as sleep:
+            signing.staple(Path('test.dmg'))
+        self.assertEqual([call.args[0][2] for call in invoke.call_args_list],
+                         ['staple', 'staple', 'validate', 'validate'])
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_gatekeeper_retries_network_error_then_checks_notarized_source(self):
+        offline = subprocess.CompletedProcess([], 1, stdout='', stderr='The request timed out')
+        for source, accepted in [('Notarized Developer ID', True), ('Unnotarized Developer ID', False)]:
+            result = subprocess.CompletedProcess([], 0, stdout='', stderr=f'source={source}')
+            with self.subTest(source=source), \
+                 patch.object(signing.subprocess, 'run', side_effect=[offline, result]) as invoke, \
+                 patch.object(signing.time, 'sleep'):
+                if accepted:
+                    signing.assess(Path('test.dmg'), 'open')
+                else:
+                    with self.assertRaises(ValueError):
+                        signing.assess(Path('test.dmg'), 'open')
+                self.assertEqual(invoke.call_count, 2)
+
+    def test_permanent_failures_are_not_retried(self):
+        for reason in ('Ticket not found', 'invalid signature', 'invalid ticket',
+                       'source=Unnotarized Developer ID', 'Unknown error 68',
+                       'invalid signature; The request timed out'):
+            for operation in ('staple', 'validate', 'gatekeeper'):
+                ok = subprocess.CompletedProcess([], 0, stdout='', stderr='')
+                failed = subprocess.CompletedProcess([], 68, stdout='', stderr=reason)
+                responses = [ok, failed] if operation == 'validate' else [failed]
+                with self.subTest(reason=reason, operation=operation), \
+                     patch.object(signing.subprocess, 'run', side_effect=responses) as invoke, \
+                     patch.object(signing.time, 'sleep') as sleep:
+                    with self.assertRaises(ValueError):
+                        if operation == 'gatekeeper':
+                            signing.assess(Path('test.dmg'), 'open')
+                        else:
+                            signing.staple(Path('test.dmg'))
+                    self.assertEqual(invoke.call_count, len(responses))
+                    sleep.assert_not_called()
+
+    def test_network_retry_logs_redact_credentials(self):
+        failed = subprocess.CompletedProcess([], 68, stdout='', stderr='The request timed out KEYIDSECRET')
+        ok = subprocess.CompletedProcess([], 0, stdout='', stderr='')
+        output = io.StringIO()
+        with patch.object(signing.subprocess, 'run', side_effect=[failed, ok]), \
+             patch.object(signing.time, 'sleep'), redirect_stdout(output), \
+             patch.dict(os.environ, {'APPLE_API_KEY_ID': 'KEYIDSECRET'}):
+            signing.run_network_check('stapler validate', ['xcrun', 'stapler', 'validate', 'test.dmg'])
+        self.assertNotIn('KEYIDSECRET', output.getvalue())
+        self.assertIn('attempt 2/5', output.getvalue())
+        self.assertIn('retrying in 10s', output.getvalue())
 
 
 class FinalizationChecks(unittest.TestCase):
