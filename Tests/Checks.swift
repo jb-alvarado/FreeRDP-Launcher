@@ -23,6 +23,21 @@ struct Checks {
         precondition(!arguments.contains { $0.hasPrefix("/p:") })
         precondition(!arguments.contains { $0.hasPrefix("/d:") })
         let legacyAccount = settings.account
+        for port in ["1", "3390", "65535"] {
+            settings.port = port
+            let portArguments = try settings.arguments(hasPassword: false)
+            precondition(portArguments.contains("/port:\(port)"))
+            precondition(settings.account != legacyAccount)
+            let restoredPort = try JSONDecoder().decode(ConnectionSettings.self, from: JSONEncoder().encode(settings))
+            precondition(restoredPort.port == port)
+        }
+        for port in ["", "0", "65536", "-1", "+3389", "33 89", "3389\n", "abc"] {
+            settings.port = port
+            do { _ = try settings.arguments(hasPassword: false); fatalError("Accepted invalid port") }
+            catch LauncherError.message("error.port") {}
+        }
+        settings.port = "3389"
+        precondition(settings.account == legacyAccount)
         settings.domain = "EXAMPLE"
         let domainArguments = try settings.arguments(hasPassword: false)
         precondition(domainArguments.contains("/d:EXAMPLE"))
@@ -63,6 +78,7 @@ struct Checks {
               logMaxBytes: 64, logMaxEntries: 4, logMaxLineBytes: 32)
         var legacyObject = try JSONSerialization.jsonObject(with: encoded) as! [String: Any]
         legacyObject.removeValue(forKey: "domain")
+        legacyObject.removeValue(forKey: "port")
         preferences.set(try JSONSerialization.data(withJSONObject: legacyObject), forKey: "old")
         let model = LauncherModel(configuration: configuration, preferences: preferences,
                                   passwordService: suite)
@@ -104,6 +120,7 @@ struct Checks {
         model.settings.server = "second.invalid"
         model.settings.username = "second-user"
         model.settings.domain = "SECOND"
+        model.settings.port = "3390"
         model.settings.resolution = "2560x1440"
         model.profileName = "   "
         precondition(model.profiles.last?.displayName == "second.invalid")

@@ -6,6 +6,8 @@
 "language.system" = "Automatic (System language)";
 "connection.title" = "Connection";
 "connection.server" = "Server";
+"connection.port" = "Port";
+"error.port" = "Enter a port between 1 and 65535.";
 "connection.username" = "Username";
 "connection.password" = "Password";
 "connection.remember" = "Save password in macOS Keychain";

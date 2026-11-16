@@ -6,6 +6,8 @@
 "language.system" = "Automatisch (Systemsprache)";
 "connection.title" = "Verbindung";
 "connection.server" = "Server";
+"connection.port" = "Port";
+"error.port" = "Bitte einen Port zwischen 1 und 65535 eingeben.";
 "connection.username" = "Benutzername";
 "connection.password" = "Passwort";
 "connection.remember" = "Passwort im macOS-Schlüsselbund speichern";

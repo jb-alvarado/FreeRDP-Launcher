@@ -4,6 +4,7 @@ import Foundation
 struct ConnectionSettings: Codable, Equatable {
     // No server, identity or preferred resolution is compiled into the app.
     var server = ""
+    var port = "3389"
     var username = ""
     var domain = ""
     var width = ""
@@ -16,13 +17,14 @@ struct ConnectionSettings: Codable, Equatable {
     init() {}
 
     private enum CodingKeys: String, CodingKey {
-        case server, username, domain, width, height, desktopScale
+        case server, port, username, domain, width, height, desktopScale
         case dynamicResolution, smartSizing, rememberPassword
     }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         server = try values.decodeIfPresent(String.self, forKey: .server) ?? ""
+        port = try values.decodeIfPresent(String.self, forKey: .port) ?? "3389"
         username = try values.decodeIfPresent(String.self, forKey: .username) ?? ""
         domain = try values.decodeIfPresent(String.self, forKey: .domain) ?? ""
         width = try values.decodeIfPresent(String.self, forKey: .width) ?? ""
@@ -57,7 +59,8 @@ struct ConnectionSettings: Codable, Equatable {
     }
 
     var account: String {
-        let base = "\(server.utf8.count):\(server)\(username)"
+        let legacy = "\(server.utf8.count):\(server)\(username)"
+        let base = Int(port) == 3389 ? legacy : "port:\(port.utf8.count):\(port)\(legacy)"
         // Preserve existing Keychain accounts when no domain is set.
         return domain.isEmpty ? base : "domain:\(domain.utf8.count):\(domain)\(base)"
     }
@@ -72,6 +75,12 @@ struct ConnectionSettings: Codable, Equatable {
             throw LauncherError.message("error.identity")
         }
         var result = ["/v:\(server)", "/u:\(username)"]
+        guard !port.isEmpty, port.utf8.allSatisfy({ (48...57).contains($0) }),
+              let number = Int(port), (1...65535).contains(number) else {
+            throw LauncherError.message("error.port")
+        }
+        // Preserve legacy server:port values when the new field is at its default.
+        if number != 3389 { result.append("/port:\(number)") }
         if !domain.isEmpty { result.append("/d:\(domain)") }
         if !width.isEmpty || !height.isEmpty {
             // MS-RDPEDISP channel limits, not connection defaults.

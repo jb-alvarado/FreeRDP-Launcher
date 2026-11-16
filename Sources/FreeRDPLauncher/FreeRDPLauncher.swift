@@ -113,6 +113,7 @@ struct LauncherView: View {
                     }
                     TextField(model.text("profiles.name"), text: $model.profileName)
                     TextField(model.text("connection.server"), text: $model.settings.server)
+                    TextField(model.text("connection.port"), text: $model.settings.port)
                     TextField(model.text("connection.username"), text: $model.settings.username)
                     TextField(model.text("connection.domain"), text: $model.settings.domain)
                     SecureField(model.text("connection.password"), text: $model.password)
